@@ -10,9 +10,10 @@
 
 #include <glvnd/libglxabi.h>
 
+#include <atomic>
 #include <stdexcept>
 #include <unordered_map>
-
+#include <vector>
 
 namespace {
 
@@ -24,6 +25,11 @@ static bool trace_en;
 		fprintf(stderr, __VA_ARGS__); \
 		fprintf(stderr, "\n"); \
 		} } while(0)
+
+#define SP_CHECK(func) do { EGLBoolean result = func; \
+		if (result != EGL_TRUE) \
+			fprintf(stderr, "[subprime] `%s` returned %d, err=%d\n", #func, result, eglGetError()); \
+		} while (0)
 
 // Helper functions
 XID get_new_id(Display *dpy) {
@@ -40,6 +46,46 @@ GLXContext create_context() {
 };
 GLXConfigImpl &get_context(GLXContext ctx) {
 	return *reinterpret_cast<GLXConfigImpl *>(ctx);
+}
+
+static std::atomic_flag egl_initialised{};
+
+EGLDisplay disp() {
+	EGLDisplay d = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+	if (!egl_initialised.test_and_set()) {
+		SP_CHECK(eglInitialize(d, nullptr, nullptr));
+	}
+	return d;
+}
+
+// GLX-EGL shimming
+static const std::unordered_map<int, int> egl_attr_map = {
+	{GLX_BUFFER_SIZE, EGL_BUFFER_SIZE},
+	{GLX_LEVEL, EGL_LEVEL},
+	{GLX_RED_SIZE, EGL_RED_SIZE},
+	{GLX_GREEN_SIZE, EGL_GREEN_SIZE},
+	{GLX_BLUE_SIZE, EGL_BLUE_SIZE},
+	{GLX_DEPTH_SIZE, EGL_DEPTH_SIZE},
+	{GLX_STENCIL_SIZE, EGL_STENCIL_SIZE},
+};
+
+std::vector<int> convert_attribute_list(const int *attrs) {
+	std::vector<int> result;
+	int ptr = 0;
+	while (true) {
+		int attr = attrs[ptr++];
+		if (attr == None)
+			break;
+		int value = attrs[ptr++];
+		auto fnd = egl_attr_map.find(attr);
+		SP_TRACE("    %d = %d", attr, value);
+		if (fnd != egl_attr_map.end()) {
+			result.push_back(fnd->second);
+			result.push_back(value);
+		}
+	}
+	result.push_back(EGL_NONE);
+	return result;
 }
 
 // Implementations of GLX API
@@ -126,9 +172,27 @@ const char *glx_query_extensions_string(Display *dpy, int screen) {
 	return glx_extensions;
 }
 
+std::vector<EGLConfig> config_store;
+
 GLXFBConfig *glx_choose_fb_config(Display *dpy, int screen, const int *attrib_list, int *nelements) {
 	SP_TRACE("");
-	return nullptr;
+	auto conv_attrs = convert_attribute_list(attrib_list);
+	std::array<EGLConfig, 256> configs_out;
+	int config_count = 0;
+	SP_CHECK(eglChooseConfig(disp(), conv_attrs.data(), configs_out.data(), 256, &config_count));
+
+	// What we return is a list of indices into config_store
+	GLXFBConfig *result = new GLXFBConfig[config_count];
+	SP_TRACE("count=%d", config_count);
+	int idx = int(config_store.size());
+	for (int i = 0; i < config_count; i++) {
+		config_store.push_back(configs_out.at(i));
+		result[i] = reinterpret_cast<GLXFBConfig>(idx++);
+	}
+
+	*nelements = config_count;
+
+	return result;
 }
 
 GLXContext glx_create_new_context(Display *dpy, GLXFBConfig config, int render_type, GLXContext share_list, Bool direct) {
