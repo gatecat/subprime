@@ -8,17 +8,12 @@
 #include <stdio.h>
 #include <dlfcn.h>
 
-#include <glvnd/libglxabi.h>
-
 #include <atomic>
 #include <stdexcept>
 #include <unordered_map>
 #include <memory>
 #include <vector>
 
-namespace {
-
-static const __GLXapiExports *api_exports = nullptr;
 static bool trace_en;
 
 #define SP_TRACE(...) do { if(trace_en) { \
@@ -33,7 +28,7 @@ static bool trace_en;
 		} while (0)
 
 // Helper functions
-XID get_new_id(Display *dpy) {
+static XID get_new_id(Display *dpy) {
     XID id;
     XLockDisplay(dpy);
     id = XAllocID(dpy);
@@ -103,68 +98,68 @@ std::vector<int> convert_attribute_list(const int *attrs) {
 }
 
 // Implementations of GLX API
-XVisualInfo *glx_choose_visual(Display *dpy, int screen, int *attribList) {
+extern "C" XVisualInfo *glXChooseVisual(Display *dpy, int screen, int *attribList) {
 	SP_TRACE("%d", screen);
 	return get_visual(dpy, screen);
 }
 
-void glx_copy_context(Display *dpy, GLXContext src, GLXContext dst) {
+extern "C" void glXCopyContext(Display *dpy, GLXContext src, GLXContext dst, unsigned long mask) {
 	SP_TRACE("");
 	// TODO
 }
 
-GLXContext glx_create_context(Display *dpy, XVisualInfo *vis, GLXContext shareList, Bool direct) {
+extern "C" GLXContext glXCreateContext(Display *dpy, XVisualInfo *vis, GLXContext shareList, Bool direct) {
 	SP_TRACE("%d", vis->depth);
 	return create_context();
 }
 
-GLXPixmap glx_create_glx_pixmap(Display *dpy, XVisualInfo *vis, Pixmap pixmap) {
+extern "C" GLXPixmap glXCreateGLXPixmap(Display *dpy, XVisualInfo *vis, Pixmap pixmap) {
 	SP_TRACE("");
 	// TODO
 	return get_new_id(dpy);
 }
 
-void glx_destroy_context(Display *dpy, GLXContext ctx) {
+extern "C" void glXDestroyContext(Display *dpy, GLXContext ctx) {
 	SP_TRACE("");
 }
 
-void glx_destroy_glx_pixmap(Display *dpy, GLXPixmap pix) {
+extern "C" void glXDestroyGLXPixmap(Display *dpy, GLXPixmap pix) {
 	SP_TRACE("");
 }
 
-int glx_get_config(Display *dpy, XVisualInfo *vis, int attrib, int *value) {
+extern "C" int glXGetConfig(Display *dpy, XVisualInfo *vis, int attrib, int *value) {
 	SP_TRACE("");
 	return GLX_BAD_ATTRIBUTE;
 }
 
-Bool glx_is_direct(Display *dpy, GLXContext ctx) {
+extern "C" Bool glXIsDirect(Display *dpy, GLXContext ctx) {
 	SP_TRACE("");
 	return True;
 }
 
-Bool glx_make_current(Display *dpy, GLXDrawable drawable, GLXContext ctx) {
+extern "C" Bool glXMakeCurrent(Display *dpy, GLXDrawable drawable, GLXContext ctx) {
 	SP_TRACE("");
 	return True;
 }
 
-void glx_swap_buffers(Display *dpy, GLXDrawable drawable) {
+extern "C" void glXSwapBuffers(Display *dpy, GLXDrawable drawable) {
 	SP_TRACE("");
 }
 
-void glx_use_x_font(Font font, int first, int count, int listBase) {
+extern "C" void glXUseXFont(Font font, int first, int count, int listBase) {
 	SP_TRACE("");
 }
 
-void glx_wait_gl() {}
+extern "C" void glXWaitGL() {}
 
-void glx_wait_x() {}
+extern "C" void glXWaitX() {}
 
 static const char *glx_vendor = "gatecat";
 static const char *glx_version = "1.3";
 static const char *glx_extensions = "";
 
 
-const char *glx_query_server_string(Display *dpy, int screen, int name) {
+extern "C" const char *glXQueryServerString(Display *dpy, int screen, int name) {
 	switch (name) {
 		case GLX_VENDOR: return glx_vendor;
 		case GLX_VERSION: return glx_version;
@@ -173,7 +168,7 @@ const char *glx_query_server_string(Display *dpy, int screen, int name) {
 	}
 }
 
-const char *glx_get_client_string(Display *dpy, int name) {
+extern "C" const char *glXGetClientString(Display *dpy, int name) {
 	switch (name) {
 		case GLX_VENDOR: return glx_vendor;
 		case GLX_VERSION: return glx_version;
@@ -182,13 +177,13 @@ const char *glx_get_client_string(Display *dpy, int name) {
 	}
 }
 
-const char *glx_query_extensions_string(Display *dpy, int screen) {
+extern "C" const char *glXQueryExtensionsString(Display *dpy, int screen) {
 	return glx_extensions;
 }
 
 std::vector<std::unique_ptr<EGLConfig>> config_store;
 
-GLXFBConfig *glx_choose_fb_config(Display *dpy, int screen, const int *attrib_list, int *nelements) {
+extern "C" GLXFBConfig *glXChooseFBConfig(Display *dpy, int screen, const int *attrib_list, int *nelements) {
 	SP_TRACE("");
 	auto conv_attrs = convert_attribute_list(attrib_list);
 	std::array<EGLConfig, 256> configs_out;
@@ -207,39 +202,39 @@ GLXFBConfig *glx_choose_fb_config(Display *dpy, int screen, const int *attrib_li
 	return result;
 }
 
-GLXContext glx_create_new_context(Display *dpy, GLXFBConfig config, int render_type, GLXContext share_list, Bool direct) {
+extern "C" GLXContext glXCreateNewContext(Display *dpy, GLXFBConfig config, int render_type, GLXContext share_list, Bool direct) {
 	SP_TRACE("");
 	return create_context();
 }
 
-GLXPbuffer glx_create_pbuffer(Display *dpy, GLXFBConfig config, const int * attrib_list) {
+extern "C" GLXPbuffer glXCreatePbuffer(Display *dpy, GLXFBConfig config, const int * attrib_list) {
 	SP_TRACE("");
 	return get_new_id(dpy);
 }
 
-GLXPixmap glx_create_pixmap(Display *dpy, GLXFBConfig config, Pixmap pixmap, const int *attrib_list) {
+extern "C" GLXPixmap glXCreatePixmap(Display *dpy, GLXFBConfig config, Pixmap pixmap, const int *attrib_list) {
 	SP_TRACE("");
 	return get_new_id(dpy);
 }
 
-GLXWindow glx_create_window(Display *dpy, GLXFBConfig config, Window win, const int *attrib_list) {
+extern "C" GLXWindow glXCreateWindow(Display *dpy, GLXFBConfig config, Window win, const int *attrib_list) {
 	SP_TRACE("");
 	return get_new_id(dpy);
 }
 
-void glx_destroy_pbuffer(Display *dpy, GLXPbuffer pbuf) {
+extern "C" void glXDestroyPbuffer(Display *dpy, GLXPbuffer pbuf) {
 	SP_TRACE("");
 }
 
-void glx_destroy_pixmap(Display *dpy, GLXPixmap pixmap) {
+extern "C" void glXDestroyPixmap(Display *dpy, GLXPixmap pixmap) {
 	SP_TRACE("");
 }
 
-void glx_destroy_window(Display *dpy, GLXWindow win) {
+extern "C" void glXDestroyWindow(Display *dpy, GLXWindow win) {
 	SP_TRACE("");
 }
 
-int glx_get_fb_config_attrib(Display *dpy, GLXFBConfig config, int attribute, int *value) {
+extern "C" int glXGetFBConfigAttrib(Display *dpy, GLXFBConfig config, int attribute, int *value) {
 	SP_TRACE("%d", attribute);
 	const EGLConfig &egl_cfg = *reinterpret_cast<EGLConfig*>(config);
 	auto fnd_attr = egl_attr_map.find(attribute);
@@ -252,127 +247,95 @@ int glx_get_fb_config_attrib(Display *dpy, GLXFBConfig config, int attribute, in
 	return Success;
 }
 
-GLXFBConfig *glx_get_fb_configs(Display *dpy, int screen, int *nelements) {
+extern "C" GLXFBConfig *glXGetFBConfigs(Display *dpy, int screen, int *nelements) {
 	SP_TRACE("");
 	*nelements = 0;
 	return nullptr;
 }
 
-XVisualInfo *glx_get_visual_from_fb_config(Display *dpy, GLXFBConfig config) {
+extern "C" XVisualInfo *glXGetVisualFromFBConfig(Display *dpy, GLXFBConfig config) {
 	return get_visual(dpy, 0);
 }
 
-void glx_get_selected_event(Display *dpy, GLXDrawable draw, unsigned long *event_mask) {
+extern "C" void glXGetSelectedEvent(Display *dpy, GLXDrawable draw, unsigned long *event_mask) {
 	SP_TRACE("");
 	*event_mask = 0;
 }
 
-void glx_select_event(Display *dpy, GLXDrawable draw, unsigned long event_mask) {
+extern "C" void glXSelectEvent(Display *dpy, GLXDrawable draw, unsigned long event_mask) {
 	SP_TRACE("mask=%lu", event_mask);
 }
 
-Bool glx_make_context_current(Display *dpy, GLXDrawable draw, GLXDrawable read, GLXContext ctx) {
+extern "C" Bool glXMakeContextCurrent(Display *dpy, GLXDrawable draw, GLXDrawable read, GLXContext ctx) {
 	SP_TRACE("");
 	return False;
 }
 
-int glx_query_context(Display *dpy, GLXContext ctx, int attribute, int *value) {
+extern "C" int glXQueryContext(Display *dpy, GLXContext ctx, int attribute, int *value) {
 	SP_TRACE("");
 	return GLX_BAD_ATTRIBUTE;
 }
 
-int glx_query_drawable(Display *dpy, GLXDrawable draw, int attribute, unsigned int *value) {
+extern "C" void glXQueryDrawable(Display *dpy, GLXDrawable draw, int attribute, unsigned int *value) {
 	SP_TRACE("");
-	return GLX_BAD_ATTRIBUTE;
+}
+
+extern "C" Bool glXQueryVersion(Display *dpy, int *major, int *minor) {
+	SP_TRACE("");
+	*major = 1;
+	*minor = 3;
+	return True;
 }
 
 // Dispatch table for GLX functions
 static const std::unordered_map<std::string, void*> glx_procs = {
-	{"glXChooseVisual", reinterpret_cast<void*>(glx_choose_visual)},
-	{"glXCopyContext", reinterpret_cast<void*>(glx_copy_context)},
-	{"glXCreateContext", reinterpret_cast<void*>(glx_create_context)},
-	{"glXCreateGLXPixmap", reinterpret_cast<void*>(glx_create_glx_pixmap)},
-	{"glXDestroyContext", reinterpret_cast<void*>(glx_destroy_context)},
-	{"glXDestroyGLXPixmap", reinterpret_cast<void*>(glx_destroy_glx_pixmap)},
-	{"glXGetConfig", reinterpret_cast<void*>(glx_get_config)},
-	{"glXIsDirect", reinterpret_cast<void*>(glx_is_direct)},
-	{"glXMakeCurrent", reinterpret_cast<void*>(glx_make_current)},
-	{"glXSwapBuffers", reinterpret_cast<void*>(glx_swap_buffers)},
-	{"glXUseXFont", reinterpret_cast<void*>(glx_use_x_font)},
-	{"glXWaitGL", reinterpret_cast<void*>(glx_wait_gl)},
-	{"glXWaitX", reinterpret_cast<void*>(glx_wait_x)},
-	{"glXQueryServerString", reinterpret_cast<void*>(glx_query_server_string)},
-	{"glXGetClientString", reinterpret_cast<void*>(glx_get_client_string)},
-	{"glXQueryExtensionsString", reinterpret_cast<void*>(glx_query_extensions_string)},
-	{"glXChooseFBConfig", reinterpret_cast<void*>(glx_choose_fb_config)},
-	{"glXCreateNewContext", reinterpret_cast<void*>(glx_create_context)},
-	{"glXCreatePbuffer", reinterpret_cast<void*>(glx_create_pbuffer)},
-	{"glXCreatePixmap", reinterpret_cast<void*>(glx_create_pixmap)},
-	{"glXCreateWindow", reinterpret_cast<void*>(glx_create_window)},
-	{"glXDestroyPbuffer", reinterpret_cast<void*>(glx_destroy_pbuffer)},
-	{"glXDestroyPixmap", reinterpret_cast<void*>(glx_destroy_pixmap)},
-	{"glXDestroyWindow", reinterpret_cast<void*>(glx_destroy_window)},
-	{"glXGetFBConfigAttrib", reinterpret_cast<void*>(glx_get_fb_config_attrib)},
-	{"glXGetFBConfigs", reinterpret_cast<void*>(glx_get_fb_configs)},
-	{"glXGetVisualFromFBConfig", reinterpret_cast<void*>(glx_get_visual_from_fb_config)},
-	{"glXGetSelectedEvent", reinterpret_cast<void*>(glx_get_selected_event)},
-	{"glXSelectEvent", reinterpret_cast<void*>(glx_select_event)},
-	{"glXMakeContextCurrent", reinterpret_cast<void*>(glx_make_context_current)},
-	{"glXQueryContext", reinterpret_cast<void*>(glx_query_context)},
-	{"glXQueryDrawable", reinterpret_cast<void*>(glx_query_drawable)},
+	{"glXChooseVisual", reinterpret_cast<void*>(glXChooseVisual)},
+	{"glXCopyContext", reinterpret_cast<void*>(glXCopyContext)},
+	{"glXCreateContext", reinterpret_cast<void*>(glXCreateContext)},
+	{"glXCreateGLXPixmap", reinterpret_cast<void*>(glXCreateGLXPixmap)},
+	{"glXDestroyContext", reinterpret_cast<void*>(glXDestroyContext)},
+	{"glXDestroyGLXPixmap", reinterpret_cast<void*>(glXDestroyGLXPixmap)},
+	{"glXGetConfig", reinterpret_cast<void*>(glXGetConfig)},
+	{"glXIsDirect", reinterpret_cast<void*>(glXIsDirect)},
+	{"glXMakeCurrent", reinterpret_cast<void*>(glXMakeCurrent)},
+	{"glXSwapBuffers", reinterpret_cast<void*>(glXSwapBuffers)},
+	{"glXUseXFont", reinterpret_cast<void*>(glXUseXFont)},
+	{"glXWaitGL", reinterpret_cast<void*>(glXWaitGL)},
+	{"glXWaitX", reinterpret_cast<void*>(glXWaitX)},
+	{"glXQueryServerString", reinterpret_cast<void*>(glXQueryServerString)},
+	{"glXGetClientString", reinterpret_cast<void*>(glXGetClientString)},
+	{"glXQueryExtensionsString", reinterpret_cast<void*>(glXQueryExtensionsString)},
+	{"glXChooseFBConfig", reinterpret_cast<void*>(glXChooseFBConfig)},
+	{"glXCreateNewContext", reinterpret_cast<void*>(glXCreateNewContext)},
+	{"glXCreatePbuffer", reinterpret_cast<void*>(glXCreatePbuffer)},
+	{"glXCreatePixmap", reinterpret_cast<void*>(glXCreatePixmap)},
+	{"glXCreateWindow", reinterpret_cast<void*>(glXCreateWindow)},
+	{"glXDestroyPbuffer", reinterpret_cast<void*>(glXDestroyPbuffer)},
+	{"glXDestroyPixmap", reinterpret_cast<void*>(glXDestroyPixmap)},
+	{"glXDestroyWindow", reinterpret_cast<void*>(glXDestroyWindow)},
+	{"glXGetFBConfigAttrib", reinterpret_cast<void*>(glXGetFBConfigAttrib)},
+	{"glXGetFBConfigs", reinterpret_cast<void*>(glXGetFBConfigs)},
+	{"glXGetVisualFromFBConfig", reinterpret_cast<void*>(glXGetVisualFromFBConfig)},
+	{"glXGetSelectedEvent", reinterpret_cast<void*>(glXGetSelectedEvent)},
+	{"glXSelectEvent", reinterpret_cast<void*>(glXSelectEvent)},
+	{"glXMakeContextCurrent", reinterpret_cast<void*>(glXMakeContextCurrent)},
+	{"glXQueryContext", reinterpret_cast<void*>(glXQueryContext)},
+	{"glXQueryDrawable", reinterpret_cast<void*>(glXQueryDrawable)},
+	{"glXQueryVersion", reinterpret_cast<void*>(glXQueryVersion)},
 };
 
-// Implementations of GLX vendor API functions
-Bool is_screen_supported(Display *dpy, int screen) {
-	return True;
-};
-
-void *get_proc_address(const GLubyte *procName) {
+extern "C" void (*glXGetProcAddress(const GLubyte *procName))(void) {
 	std::string name_str(reinterpret_cast<const char*>(procName));
 	SP_TRACE("%s", name_str.c_str());
 
 	auto glx_fnd = glx_procs.find(name_str);
 	if (glx_fnd != glx_procs.end())
-		return glx_fnd->second;
+		return reinterpret_cast<void(*)(void)>(glx_fnd->second);
 	// Unsupported extensions
 	if (name_str == "glXImportContextEXT" ||
 		name_str == "glXFreeContextEXT" ||
 		name_str == "glXCreateContextAttribsARB")
-		return nullptr;
+		return reinterpret_cast<void(*)(void)>(0);
 	// Use EGL for the base OpenGL functions
-	return reinterpret_cast<void*>(eglGetProcAddress(name_str.c_str()));
-}
-
-void *get_dispatch_address(const GLubyte *procName) {
-	return nullptr;
-}
-
-void set_dispatch_index(const GLubyte *procName, int index) {
-
-}
-
-}
-
-// The GLX vendor API entry point
-extern "C" Bool __glx_Main(
-	uint32_t version,
-	const __GLXapiExports *exports,
-	__GLXvendorInfo *vendor,
-	__GLXapiImports *imports
-) {
-	if (GLX_VENDOR_ABI_GET_MAJOR_VERSION(version) == GLX_VENDOR_ABI_MAJOR_VERSION
-		&& GLX_VENDOR_ABI_GET_MINOR_VERSION(version) >= GLX_VENDOR_ABI_MINOR_VERSION) {
-		fprintf(stderr, "subprime vendor initialised (version=%08x).\n", version);
-		api_exports = exports;
-		imports->isScreenSupported = is_screen_supported;
-		imports->getProcAddress = get_proc_address;
-		imports->getDispatchAddress = get_dispatch_address;
-		imports->setDispatchIndex = set_dispatch_index;
-
-		const char *trc_env = getenv("SUBPRIME_TRACE");
-		trace_en = (trc_env && std::stoi(trc_env));
-
-		return True;
-	}
-	return False;
+	return eglGetProcAddress(name_str.c_str());
 }
