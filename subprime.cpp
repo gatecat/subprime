@@ -13,6 +13,7 @@
 #include <atomic>
 #include <stdexcept>
 #include <unordered_map>
+#include <memory>
 #include <vector>
 
 namespace {
@@ -58,6 +59,18 @@ EGLDisplay disp() {
 	return d;
 }
 
+static XVisualInfo* get_visual(Display *dpy, int screen)
+{
+    XVisualInfo *ret = new XVisualInfo;
+    if (XMatchVisualInfo(dpy, screen,
+                         DefaultDepth(dpy, screen),
+                         TrueColor,
+                         ret) == 0) {
+        return nullptr;
+    }
+    return ret;
+}
+
 // GLX-EGL shimming
 static const std::unordered_map<int, int> egl_attr_map = {
 	{GLX_BUFFER_SIZE, EGL_BUFFER_SIZE},
@@ -65,6 +78,7 @@ static const std::unordered_map<int, int> egl_attr_map = {
 	{GLX_RED_SIZE, EGL_RED_SIZE},
 	{GLX_GREEN_SIZE, EGL_GREEN_SIZE},
 	{GLX_BLUE_SIZE, EGL_BLUE_SIZE},
+	{GLX_ALPHA_SIZE, EGL_ALPHA_SIZE},
 	{GLX_DEPTH_SIZE, EGL_DEPTH_SIZE},
 	{GLX_STENCIL_SIZE, EGL_STENCIL_SIZE},
 };
@@ -91,7 +105,7 @@ std::vector<int> convert_attribute_list(const int *attrs) {
 // Implementations of GLX API
 XVisualInfo *glx_choose_visual(Display *dpy, int screen, int *attribList) {
 	SP_TRACE("%d", screen);
-	return nullptr;
+	return get_visual(dpy, screen);
 }
 
 void glx_copy_context(Display *dpy, GLXContext src, GLXContext dst) {
@@ -172,7 +186,7 @@ const char *glx_query_extensions_string(Display *dpy, int screen) {
 	return glx_extensions;
 }
 
-std::vector<EGLConfig> config_store;
+std::vector<std::unique_ptr<EGLConfig>> config_store;
 
 GLXFBConfig *glx_choose_fb_config(Display *dpy, int screen, const int *attrib_list, int *nelements) {
 	SP_TRACE("");
@@ -181,13 +195,11 @@ GLXFBConfig *glx_choose_fb_config(Display *dpy, int screen, const int *attrib_li
 	int config_count = 0;
 	SP_CHECK(eglChooseConfig(disp(), conv_attrs.data(), configs_out.data(), 256, &config_count));
 
-	// What we return is a list of indices into config_store
-	GLXFBConfig *result = new GLXFBConfig[config_count];
+	GLXFBConfig *result = reinterpret_cast<GLXFBConfig*>(malloc(sizeof(GLXFBConfig) * config_count));
 	SP_TRACE("count=%d", config_count);
-	int idx = int(config_store.size());
 	for (int i = 0; i < config_count; i++) {
-		config_store.push_back(configs_out.at(i));
-		result[i] = reinterpret_cast<GLXFBConfig>(idx++);
+		config_store.emplace_back(std::make_unique<EGLConfig>(configs_out.at(i)));
+		result[i] = reinterpret_cast<GLXFBConfig>(config_store.back().get());
 	}
 
 	*nelements = config_count;
@@ -228,7 +240,16 @@ void glx_destroy_window(Display *dpy, GLXWindow win) {
 }
 
 int glx_get_fb_config_attrib(Display *dpy, GLXFBConfig config, int attribute, int *value) {
-	return GLX_BAD_ATTRIBUTE;
+	SP_TRACE("%d", attribute);
+	const EGLConfig &egl_cfg = *reinterpret_cast<EGLConfig*>(config);
+	auto fnd_attr = egl_attr_map.find(attribute);
+	if (fnd_attr != egl_attr_map.end()) {
+		eglGetConfigAttrib(disp(), egl_cfg, fnd_attr->second, value);
+		SP_TRACE(" val=%d", *value);
+	} else if (attribute == GLX_VISUAL_ID) {
+		*value = XVisualIDFromVisual(get_visual(dpy, 0)->visual);
+	}
+	return Success;
 }
 
 GLXFBConfig *glx_get_fb_configs(Display *dpy, int screen, int *nelements) {
@@ -238,8 +259,7 @@ GLXFBConfig *glx_get_fb_configs(Display *dpy, int screen, int *nelements) {
 }
 
 XVisualInfo *glx_get_visual_from_fb_config(Display *dpy, GLXFBConfig config) {
-	SP_TRACE("");
-	return nullptr;
+	return get_visual(dpy, 0);
 }
 
 void glx_get_selected_event(Display *dpy, GLXDrawable draw, unsigned long *event_mask) {
@@ -314,7 +334,13 @@ void *get_proc_address(const GLubyte *procName) {
 	auto glx_fnd = glx_procs.find(name_str);
 	if (glx_fnd != glx_procs.end())
 		return glx_fnd->second;
-	return nullptr;
+	// Unsupported extensions
+	if (name_str == "glXImportContextEXT" ||
+		name_str == "glXFreeContextEXT" ||
+		name_str == "glXCreateContextAttribsARB")
+		return nullptr;
+	// Use EGL for the base OpenGL functions
+	return reinterpret_cast<void*>(eglGetProcAddress(name_str.c_str()));
 }
 
 void *get_dispatch_address(const GLubyte *procName) {
