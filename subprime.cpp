@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <dlfcn.h>
 
+#include <glvnd/libeglabi.h>
 #include <glvnd/libglxabi.h>
 
 #include <atomic>
@@ -327,6 +328,9 @@ Bool is_screen_supported(Display *dpy, int screen) {
 	return True;
 };
 
+static __EGLapiExports egl_exports;
+static __EGLapiImports egl_imports;
+
 void *get_proc_address(const GLubyte *procName) {
 	std::string name_str(reinterpret_cast<const char*>(procName));
 	SP_TRACE("%s", name_str.c_str());
@@ -340,7 +344,7 @@ void *get_proc_address(const GLubyte *procName) {
 		name_str == "glXCreateContextAttribsARB")
 		return nullptr;
 	// Use EGL for the base OpenGL functions
-	return reinterpret_cast<void*>(eglGetProcAddress(name_str.c_str()));
+	return egl_imports.getProcAddress(name_str.c_str());
 }
 
 void *get_dispatch_address(const GLubyte *procName) {
@@ -352,6 +356,13 @@ void set_dispatch_index(const GLubyte *procName, int index) {
 }
 
 }
+
+typedef EGLBoolean (*egl_main_t)(
+	uint32_t version,
+	const __EGLapiExports *exports,
+	void *vendor,
+	__EGLapiImports *imports
+);
 
 // The GLX vendor API entry point
 extern "C" Bool __glx_Main(
@@ -371,6 +382,17 @@ extern "C" Bool __glx_Main(
 
 		const char *trc_env = getenv("SUBPRIME_TRACE");
 		trace_en = (trc_env && std::stoi(trc_env));
+
+		void *egl_lib = dlopen("libEGL_nvidia.so.0", RTLD_LOCAL | RTLD_LAZY);
+		if (!egl_lib)
+		{
+			fprintf(stderr, "failed to open EGL vendor library!\n");
+			exit(1);
+			return False;
+		}
+		auto egl_main = reinterpret_cast<egl_main_t>(dlsym(egl_lib, "__egl_Main"));
+		EGLBoolean egl_result = egl_main(0x0001, &egl_exports, nullptr, &egl_imports);
+		SP_TRACE("egl_result=%d", egl_result);
 
 		return True;
 	}
