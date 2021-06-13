@@ -273,7 +273,7 @@ void glx_wait_x() {}
 
 static const char *glx_vendor = "gatecat";
 static const char *glx_version = "1.4 subprime";
-static const char *glx_extensions = "";
+static const char *glx_extensions = "GLX_ARB_create_context GLX_ARB_create_context_profile";
 
 
 const char *glx_query_server_string(Display *dpy, int screen, int name) {
@@ -281,7 +281,7 @@ const char *glx_query_server_string(Display *dpy, int screen, int name) {
 		case GLX_VENDOR: return glx_vendor;
 		case GLX_VERSION: return glx_version;
 		case GLX_EXTENSIONS: return glx_extensions;
-		default: return glx_extensions;
+		default: return nullptr;;
 	}
 }
 
@@ -290,7 +290,7 @@ const char *glx_get_client_string(Display *dpy, int name) {
 		case GLX_VENDOR: return glx_vendor;
 		case GLX_VERSION: return glx_version;
 		case GLX_EXTENSIONS: return glx_extensions;
-		default: return glx_extensions;
+		default: return nullptr;
 	}
 }
 
@@ -360,14 +360,24 @@ int glx_get_fb_config_attrib(Display *dpy, GLXFBConfig config, int attribute, in
 		SP_TRACE(" val=%d", *value);
 	} else if (attribute == GLX_VISUAL_ID) {
 		*value = XVisualIDFromVisual(get_visual(dpy, 0)->visual);
+	} else if (attribute == GLX_DRAWABLE_TYPE) {
+		*value = (GLX_WINDOW_BIT | GLX_PIXMAP_BIT | GLX_PBUFFER_BIT);
+	} else if (attribute == GLX_RENDER_TYPE) {
+		*value = GLX_RGBA_BIT;
+	} else if (attribute == GLX_X_RENDERABLE) {
+		*value = True;
+	} else if (attribute == GLX_MAX_PBUFFER_WIDTH || attribute == GLX_MAX_PBUFFER_HEIGHT) {
+		*value = 4096;
+	} else if (attribute == GLX_MAX_PBUFFER_PIXELS) {
+		*value = 4096*4096;
 	}
 	return Success;
 }
 
 GLXFBConfig *glx_get_fb_configs(Display *dpy, int screen, int *nelements) {
 	SP_TRACE("");
-	*nelements = 0;
-	return nullptr;
+	int default_attrs[] = {None};
+	return glx_choose_fb_config(dpy, screen, default_attrs, nelements);
 }
 
 XVisualInfo *glx_get_visual_from_fb_config(Display *dpy, GLXFBConfig config) {
@@ -396,6 +406,11 @@ int glx_query_context(Display *dpy, GLXContext ctx, int attribute, int *value) {
 int glx_query_drawable(Display *dpy, GLXDrawable draw, int attribute, unsigned int *value) {
 	SP_TRACE("");
 	return GLX_BAD_ATTRIBUTE;
+}
+
+GLXContext glx_create_context_attribs_arb(Display *dpy, GLXFBConfig config, GLXContext share_list, Bool direct, const int *attrib_list) {
+	SP_TRACE("");
+	return create_context(config, share_list);
 }
 
 // Dispatch table for GLX functions
@@ -432,6 +447,7 @@ static const std::unordered_map<std::string, void*> glx_procs = {
 	{"glXMakeContextCurrent", reinterpret_cast<void*>(glx_make_context_current)},
 	{"glXQueryContext", reinterpret_cast<void*>(glx_query_context)},
 	{"glXQueryDrawable", reinterpret_cast<void*>(glx_query_drawable)},
+	{"glXCreateContextAttribsARB", reinterpret_cast<void*>(glx_create_context_attribs_arb)}
 };
 
 // Implementations of GLX vendor API functions
@@ -448,8 +464,7 @@ void *get_proc_address(const GLubyte *procName) {
 		return glx_fnd->second;
 	// Unsupported extensions
 	if (name_str == "glXImportContextEXT" ||
-		name_str == "glXFreeContextEXT" ||
-		name_str == "glXCreateContextAttribsARB")
+		name_str == "glXFreeContextEXT")
 		return nullptr;
 	// Use EGL for the base OpenGL functions
 	return egl_imports.getProcAddress(name_str.c_str());
