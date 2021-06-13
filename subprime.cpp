@@ -176,13 +176,17 @@ struct SurfaceData {
 
 std::unordered_map<GLXDrawable, SurfaceData> drawable2surface;
 
-EGLSurface lookup_drawable(Display *dpy, GLXDrawable drawable) {
+EGLSurface lookup_drawable(Display *dpy, GLXDrawable drawable, GLXFBConfig cfg = nullptr) {
 	if (drawable2surface.count(drawable))
 		return drawable2surface.at(drawable).egl_sfc;
 	// Create a new backing PBuffer
 	EGLDisplay dp = disp();
 	EGLConfig egl_cfg;
-	get_config(dp, &egl_cfg);
+	if (cfg == nullptr) {
+		get_config(dp, &egl_cfg);
+	} else {
+		egl_cfg = *reinterpret_cast<EGLConfig*>(cfg);
+	}
 	Window root;
 	int x, y;
 	unsigned int width = 0, height = 0, border_width, depth;
@@ -239,8 +243,9 @@ Bool glx_is_direct(Display *dpy, GLXContext ctx) {
 Bool glx_make_current(Display *dpy, GLXDrawable drawable, GLXContext ctx) {
 	SP_TRACE("");
 	EGLDisplay dp = disp();
-	EGLSurface surface = lookup_drawable(dpy, drawable);
-	SP_CHECK(fn_eglMakeCurrent(dp, surface, surface, get_context(ctx).egl_ctx));
+	EGLSurface surface = drawable ? lookup_drawable(dpy, drawable) : EGL_NO_SURFACE;
+	EGLContext egl_ctx = ctx ? get_context(ctx).egl_ctx : EGL_NO_CONTEXT;
+	SP_CHECK(fn_eglMakeCurrent(dp, surface, surface, egl_ctx));
 	return True;
 }
 
@@ -331,12 +336,14 @@ GLXPbuffer glx_create_pbuffer(Display *dpy, GLXFBConfig config, const int * attr
 
 GLXPixmap glx_create_pixmap(Display *dpy, GLXFBConfig config, Pixmap pixmap, const int *attrib_list) {
 	SP_TRACE("");
-	return get_new_id(dpy);
+	lookup_drawable(dpy, pixmap, config);
+	return pixmap;
 }
 
 GLXWindow glx_create_window(Display *dpy, GLXFBConfig config, Window win, const int *attrib_list) {
 	SP_TRACE("");
-	return get_new_id(dpy);
+	lookup_drawable(dpy, win, config);
+	return win;
 }
 
 void glx_destroy_pbuffer(Display *dpy, GLXPbuffer pbuf) {
