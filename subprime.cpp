@@ -37,6 +37,10 @@ static EGLSurface (*fn_eglCreatePbufferSurface)(EGLDisplay display, EGLConfig co
 static EGLBoolean (*fn_eglMakeCurrent)(EGLDisplay display, EGLSurface draw, EGLSurface read, EGLContext context);
 static EGLint (*fn_eglGetError)(void);
 
+static void (*fn_glReadPixels)(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void* data);
+static void (*fn_glReadBuffer)(GLenum mode);
+static void (*fn_glFinish)(void);
+
 #define SP_TRACE(...) do { if(trace_en) { \
 		fprintf(stderr, "[subprime] %s: ", __func__); \
 		fprintf(stderr, __VA_ARGS__); \
@@ -49,7 +53,7 @@ static EGLint (*fn_eglGetError)(void);
 			std::terminate(); \
 		} } while (0)
 
-#define SP_ASSERT(x) do { if(!x) {\
+#define SP_ASSERT(x) do { if(!(x)) {\
 			fprintf(stderr, "[subprime] assert failed %s:%d '%s'\n", __FILE__, __LINE__, #x); \
 			std::terminate(); \
 		}} while (0)
@@ -67,7 +71,6 @@ static std::atomic_flag egl_initialised{};
 
 EGLDisplay disp() {
 	EGLDisplay d = egl_imports.getPlatformDisplay(EGL_PLATFORM_DEVICE_EXT, nullptr, nullptr);
-	SP_TRACE("EGLDisplay d=%d", d);
 	if (!egl_initialised.test_and_set()) {
 		SP_CHECK(fn_eglInitialize(d, nullptr, nullptr));
 	}
@@ -158,11 +161,17 @@ std::vector<int> convert_attribute_list(const int *attrs) {
 	return result;
 }
 
-std::unordered_map<GLXDrawable, EGLSurface> drawable2surface;
+struct SurfaceData {
+	EGLSurface egl_sfc;
+	unsigned width;
+	unsigned height;
+};
+
+std::unordered_map<GLXDrawable, SurfaceData> drawable2surface;
 
 EGLSurface lookup_drawable(Display *dpy, GLXDrawable drawable) {
 	if (drawable2surface.count(drawable))
-		return drawable2surface.at(drawable);
+		return drawable2surface.at(drawable).egl_sfc;
 	// Create a new backing PBuffer
 	EGLDisplay dp = disp();
 	EGLConfig egl_cfg;
@@ -174,7 +183,9 @@ EGLSurface lookup_drawable(Display *dpy, GLXDrawable drawable) {
 	SP_TRACE("%d w=%u h=%u", st, width, height);
 	std::vector<int> attrs{EGL_WIDTH, int(width), EGL_HEIGHT, int(height), EGL_NONE};
 	EGLSurface surface = fn_eglCreatePbufferSurface(dp, egl_cfg, attrs.data());
-	drawable2surface[drawable] = surface;
+	drawable2surface[drawable].egl_sfc = surface;
+	drawable2surface[drawable].width = width;
+	drawable2surface[drawable].height = height;
 	return surface;
 }
 
@@ -225,8 +236,23 @@ Bool glx_make_current(Display *dpy, GLXDrawable drawable, GLXContext ctx) {
 	return True;
 }
 
+
 void glx_swap_buffers(Display *dpy, GLXDrawable drawable) {
-	// SP_TRACE("");
+	if (!drawable2surface.count(drawable))
+		return;
+	auto &sfc = drawable2surface.at(drawable);
+	size_t buf_size = 4 * sfc.width * sfc.height;
+	uint8_t *pixel_buf = reinterpret_cast<uint8_t*>(malloc(buf_size));
+	fn_glReadBuffer(GL_BACK);
+	fn_glReadPixels(0, 0, sfc.width, sfc.height, GL_RGB, GL_UNSIGNED_BYTE, pixel_buf);
+	fn_glFinish();
+	XImage *img = XCreateImage(dpy, get_visual(dpy, 0)->visual, 24, XYPixmap, 0,
+		reinterpret_cast<char*>(pixel_buf), sfc.width, sfc.height, 8, 0);
+	SP_ASSERT(img != nullptr);
+	GC gc = XCreateGC(dpy, drawable, 0, NULL);
+	XPutImage(dpy, drawable, gc, img, 0, 0, 0, 0, sfc.width, sfc.height);
+	XFlush(dpy);
+	XDestroyImage(img);
 }
 
 void glx_use_x_font(Font font, int first, int count, int listBase) {
@@ -478,6 +504,9 @@ extern "C" Bool __glx_Main(
 		LOAD_FN(eglGetError);
 		LOAD_FN(eglCreatePbufferSurface);
 		LOAD_FN(eglMakeCurrent);
+		LOAD_FN(glReadBuffer);
+		LOAD_FN(glReadPixels);
+		LOAD_FN(glFinish);
 
 		if (egl_imports.patchThreadAttach) {
 			egl_imports.patchThreadAttach();
