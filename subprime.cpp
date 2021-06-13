@@ -33,6 +33,8 @@ static EGLDisplay (*fn_eglGetDisplay)(NativeDisplayType native_display);
 static EGLBoolean (*fn_eglChooseConfig)(EGLDisplay display, EGLint const *attrib_list, EGLConfig *configs, EGLint config_size, EGLint *num_config);
 static EGLBoolean (*fn_eglGetConfigAttrib)(EGLDisplay display, EGLConfig config, EGLint attribute, EGLint *value);
 static EGLContext (*fn_eglCreateContext)(EGLDisplay display, EGLConfig config, EGLContext share_context, EGLint const *attrib_list);
+static EGLSurface (*fn_eglCreatePbufferSurface)(EGLDisplay display, EGLConfig config, EGLint const *attrib_list);
+static EGLBoolean (*fn_eglMakeCurrent)(EGLDisplay display, EGLSurface draw, EGLSurface read, EGLContext context);
 static EGLint (*fn_eglGetError)(void);
 
 #define SP_TRACE(...) do { if(trace_en) { \
@@ -82,15 +84,23 @@ GLXConfigImpl &get_context(GLXContext ctx) {
 	return *reinterpret_cast<GLXConfigImpl *>(ctx);
 }
 
+void get_config(EGLDisplay dp, EGLConfig *egl_cfg) {
+	// TODO: proper config choosing
+	int cfg_attrs[] = {EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+		EGL_RED_SIZE, 8,
+		EGL_GREEN_SIZE, 8,
+		EGL_BLUE_SIZE, 8,
+		EGL_NONE};
+	int num_configs;
+	SP_CHECK(fn_eglChooseConfig(dp, cfg_attrs, egl_cfg, 1, &num_configs));
+	SP_ASSERT(num_configs > 0);
+}
+
 GLXContext create_context(GLXFBConfig cfg, GLXContext share_context) {
 	EGLDisplay dp = disp();
 	EGLConfig egl_cfg;
 	if (cfg == nullptr) {
-		// TODO: proper config choosing
-		std::array<int, 3> cfg_attrs{EGL_BUFFER_SIZE, 32, EGL_NONE};
-		int num_configs;
-		SP_CHECK(fn_eglChooseConfig(dp, cfg_attrs.data(), &egl_cfg, 1, &num_configs));
-		SP_ASSERT(num_configs > 0);
+		get_config(dp, &egl_cfg);
 	} else {
 		egl_cfg = *reinterpret_cast<EGLConfig*>(cfg);
 	}
@@ -130,7 +140,7 @@ static const std::unordered_map<int, int> egl_attr_map = {
 };
 
 std::vector<int> convert_attribute_list(const int *attrs) {
-	std::vector<int> result;
+	std::vector<int> result{EGL_SURFACE_TYPE, EGL_PBUFFER_BIT};
 	int ptr = 0;
 	while (true) {
 		int attr = attrs[ptr++];
@@ -146,6 +156,26 @@ std::vector<int> convert_attribute_list(const int *attrs) {
 	}
 	result.push_back(EGL_NONE);
 	return result;
+}
+
+std::unordered_map<GLXDrawable, EGLSurface> drawable2surface;
+
+EGLSurface lookup_drawable(Display *dpy, GLXDrawable drawable) {
+	if (drawable2surface.count(drawable))
+		return drawable2surface.at(drawable);
+	// Create a new backing PBuffer
+	EGLDisplay dp = disp();
+	EGLConfig egl_cfg;
+	get_config(dp, &egl_cfg);
+	Window root;
+	int x, y;
+	unsigned int width = 0, height = 0, border_width, depth;
+	auto st = XGetGeometry(dpy, drawable, &root, &x, &y, &width, &height, &border_width, &depth);
+	SP_TRACE("%d w=%u h=%u", st, width, height);
+	std::vector<int> attrs{EGL_WIDTH, int(width), EGL_HEIGHT, int(height), EGL_NONE};
+	EGLSurface surface = fn_eglCreatePbufferSurface(dp, egl_cfg, attrs.data());
+	drawable2surface[drawable] = surface;
+	return surface;
 }
 
 // Implementations of GLX API
@@ -189,7 +219,9 @@ Bool glx_is_direct(Display *dpy, GLXContext ctx) {
 }
 
 Bool glx_make_current(Display *dpy, GLXDrawable drawable, GLXContext ctx) {
-	SP_TRACE("");
+	EGLDisplay dp = disp();
+	EGLSurface surface = lookup_drawable(dpy, drawable);
+	SP_CHECK(fn_eglMakeCurrent(dp, surface, surface, get_context(ctx).egl_ctx));
 	return True;
 }
 
@@ -206,7 +238,7 @@ void glx_wait_gl() {}
 void glx_wait_x() {}
 
 static const char *glx_vendor = "gatecat";
-static const char *glx_version = "1.3";
+static const char *glx_version = "1.4 subprime";
 static const char *glx_extensions = "";
 
 
@@ -215,7 +247,7 @@ const char *glx_query_server_string(Display *dpy, int screen, int name) {
 		case GLX_VENDOR: return glx_vendor;
 		case GLX_VERSION: return glx_version;
 		case GLX_EXTENSIONS: return glx_extensions;
-		default: return nullptr;
+		default: return glx_extensions;
 	}
 }
 
@@ -224,7 +256,7 @@ const char *glx_get_client_string(Display *dpy, int name) {
 		case GLX_VENDOR: return glx_vendor;
 		case GLX_VERSION: return glx_version;
 		case GLX_EXTENSIONS: return glx_extensions;
-		default: return nullptr;
+		default: return glx_extensions;
 	}
 }
 
@@ -375,7 +407,7 @@ Bool is_screen_supported(Display *dpy, int screen) {
 
 void *get_proc_address(const GLubyte *procName) {
 	std::string name_str(reinterpret_cast<const char*>(procName));
-	SP_TRACE("%s", name_str.c_str());
+	// SP_TRACE("%s", name_str.c_str());
 
 	auto glx_fnd = glx_procs.find(name_str);
 	if (glx_fnd != glx_procs.end())
@@ -444,6 +476,12 @@ extern "C" Bool __glx_Main(
 		LOAD_FN(eglGetConfigAttrib);
 		LOAD_FN(eglCreateContext);
 		LOAD_FN(eglGetError);
+		LOAD_FN(eglCreatePbufferSurface);
+		LOAD_FN(eglMakeCurrent);
+
+		if (egl_imports.patchThreadAttach) {
+			egl_imports.patchThreadAttach();
+		}
 
 		return True;
 	}
