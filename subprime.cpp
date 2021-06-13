@@ -37,6 +37,7 @@ static EGLSurface (*fn_eglCreatePbufferSurface)(EGLDisplay display, EGLConfig co
 static EGLBoolean (*fn_eglMakeCurrent)(EGLDisplay display, EGLSurface draw, EGLSurface read, EGLContext context);
 static EGLBoolean (*fn_eglSwapBuffers)(EGLDisplay display, EGLSurface surface);
 static EGLBoolean (*fn_eglBindAPI)(EGLenum api);
+static EGLBoolean (*fn_eglDestroySurface)(EGLDisplay disp, EGLSurface surface);
 
 static EGLint (*fn_eglGetError)(void);
 
@@ -172,9 +173,18 @@ struct SurfaceData {
 	EGLSurface egl_sfc;
 	unsigned width;
 	unsigned height;
+	GLXFBConfig cfg;
 };
 
 std::unordered_map<GLXDrawable, SurfaceData> drawable2surface;
+
+std::pair<unsigned, unsigned> get_drawable_dims(Display *dpy, GLXDrawable drawable) {
+	Window root;
+	int x, y;
+	unsigned int width = 0, height = 0, border_width, depth;
+	auto st = XGetGeometry(dpy, drawable, &root, &x, &y, &width, &height, &border_width, &depth);
+	return std::make_pair(width, height);
+}
 
 EGLSurface lookup_drawable(Display *dpy, GLXDrawable drawable, GLXFBConfig cfg = nullptr) {
 	if (drawable2surface.count(drawable))
@@ -187,16 +197,14 @@ EGLSurface lookup_drawable(Display *dpy, GLXDrawable drawable, GLXFBConfig cfg =
 	} else {
 		egl_cfg = *reinterpret_cast<EGLConfig*>(cfg);
 	}
-	Window root;
-	int x, y;
-	unsigned int width = 0, height = 0, border_width, depth;
-	auto st = XGetGeometry(dpy, drawable, &root, &x, &y, &width, &height, &border_width, &depth);
-	SP_TRACE("%d w=%u h=%u", st, width, height);
+	unsigned width, height;
+	std::tie(width, height) = get_drawable_dims(dpy, drawable);
 	std::vector<int> attrs{EGL_WIDTH, int(width), EGL_HEIGHT, int(height), EGL_NONE};
 	EGLSurface surface = fn_eglCreatePbufferSurface(dp, egl_cfg, attrs.data());
 	drawable2surface[drawable].egl_sfc = surface;
 	drawable2surface[drawable].width = width;
 	drawable2surface[drawable].height = height;
+	drawable2surface[drawable].cfg = cfg;
 	return surface;
 }
 
@@ -240,12 +248,20 @@ Bool glx_is_direct(Display *dpy, GLXContext ctx) {
 	return True;
 }
 
+static GLXDrawable curr_drawable;
+static EGLSurface curr_surface;
+static EGLContext last_valid_context;
+static EGLContext curr_context;
+
 Bool glx_make_current(Display *dpy, GLXDrawable drawable, GLXContext ctx) {
 	SP_TRACE("");
 	EGLDisplay dp = disp();
-	EGLSurface surface = drawable ? lookup_drawable(dpy, drawable) : EGL_NO_SURFACE;
-	EGLContext egl_ctx = ctx ? get_context(ctx).egl_ctx : EGL_NO_CONTEXT;
-	SP_CHECK(fn_eglMakeCurrent(dp, surface, surface, egl_ctx));
+	curr_surface = drawable ? lookup_drawable(dpy, drawable) : EGL_NO_SURFACE;
+	curr_context = ctx ? get_context(ctx).egl_ctx : EGL_NO_CONTEXT;
+	SP_CHECK(fn_eglMakeCurrent(dp, curr_surface, curr_surface, curr_context));
+	curr_drawable = drawable;
+	if (curr_context != EGL_NO_CONTEXT)
+		last_valid_context = curr_context;
 	return True;
 }
 
@@ -256,8 +272,11 @@ void glx_swap_buffers(Display *dpy, GLXDrawable drawable) {
 	auto &sfc = drawable2surface.at(drawable);
 	size_t buf_size = 4 * sfc.width * sfc.height;
 	uint8_t *pixel_buf = reinterpret_cast<uint8_t*>(malloc(buf_size));
+	// Make sure the surface is current
+	SP_CHECK(fn_eglMakeCurrent(disp(), sfc.egl_sfc, sfc.egl_sfc, last_valid_context));
 	fn_glFinish();
 	fn_glReadPixels(0, 0, sfc.width, sfc.height, GL_BGRA, GL_UNSIGNED_BYTE, pixel_buf);
+	SP_CHECK(fn_eglMakeCurrent(disp(), curr_surface, curr_surface, curr_context));
 	// Unmirror
 	for (int y = 0; y < (sfc.height / 2); y++) {
 		for (int x = 0; x < sfc.width * 4; x++) {
@@ -271,6 +290,21 @@ void glx_swap_buffers(Display *dpy, GLXDrawable drawable) {
 	XPutImage(dpy, drawable, gc, img, 0, 0, 0, 0, sfc.width, sfc.height);
 	XFlush(dpy);
 	XDestroyImage(img);
+	// Also, check if the buffer was resized
+	unsigned new_width, new_height;
+	std::tie(new_width, new_height) = get_drawable_dims(dpy, drawable);
+	if (new_width != sfc.width || new_height != sfc.height) {
+		// Destroy old surface and recreate with new size
+		if (curr_drawable == drawable)
+			SP_CHECK(fn_eglMakeCurrent(disp(), EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
+		SP_CHECK(fn_eglDestroySurface(disp(), sfc.egl_sfc));
+		GLXFBConfig cfg = sfc.cfg;
+		drawable2surface.erase(drawable);
+		EGLSurface new_sfc = lookup_drawable(dpy, drawable, cfg);
+		// If it was current before, make it current again
+		if (curr_drawable == drawable)
+			SP_CHECK(fn_eglMakeCurrent(disp(), new_sfc, new_sfc, curr_context));
+	}
 }
 
 void glx_use_x_font(Font font, int first, int count, int listBase) {
@@ -541,6 +575,7 @@ extern "C" Bool __glx_Main(
 		LOAD_FN(eglMakeCurrent);
 		LOAD_FN(eglSwapBuffers);
 		LOAD_FN(eglBindAPI);
+		LOAD_FN(eglDestroySurface);
 		LOAD_FN(glReadBuffer);
 		LOAD_FN(glReadPixels);
 		LOAD_FN(glFinish);
