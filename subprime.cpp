@@ -279,9 +279,8 @@ void glx_swap_buffers(Display *dpy, GLXDrawable drawable) {
 	SP_CHECK(fn_eglMakeCurrent(disp(), curr_surface, curr_surface, curr_context));
 	// Unmirror
 	for (int y = 0; y < (sfc.height / 2); y++) {
-		for (int x = 0; x < sfc.width * 4; x++) {
-			std::swap(pixel_buf[y * sfc.width * 4 + x], pixel_buf[((sfc.height - 1) - y) * sfc.width * 4 + x]);
-		}
+		std::swap_ranges(pixel_buf + (y * sfc.width * 4), pixel_buf + ((y + 1) * sfc.width * 4),
+			pixel_buf + (((sfc.height - 1) - y) * sfc.width * 4));
 	}
 	XImage *img = XCreateImage(dpy, get_visual(dpy, 0)->visual, 24, ZPixmap, 0,
 		reinterpret_cast<char*>(pixel_buf), sfc.width, sfc.height, 32, 0);
