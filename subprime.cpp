@@ -256,9 +256,14 @@ void glx_swap_buffers(Display *dpy, GLXDrawable drawable) {
 	auto &sfc = drawable2surface.at(drawable);
 	size_t buf_size = 4 * sfc.width * sfc.height;
 	uint8_t *pixel_buf = reinterpret_cast<uint8_t*>(malloc(buf_size));
-	fn_glReadBuffer(GL_FRONT);
 	fn_glFinish();
-	fn_glReadPixels(0, 0, sfc.width, sfc.height, GL_RGBA, GL_UNSIGNED_BYTE, pixel_buf);
+	fn_glReadPixels(0, 0, sfc.width, sfc.height, GL_BGRA, GL_UNSIGNED_BYTE, pixel_buf);
+	// Unmirror
+	for (int y = 0; y < (sfc.height / 2); y++) {
+		for (int x = 0; x < sfc.width * 4; x++) {
+			std::swap(pixel_buf[y * sfc.width * 4 + x], pixel_buf[((sfc.height - 1) - y) * sfc.width * 4 + x]);
+		}
+	}
 	XImage *img = XCreateImage(dpy, get_visual(dpy, 0)->visual, 24, ZPixmap, 0,
 		reinterpret_cast<char*>(pixel_buf), sfc.width, sfc.height, 32, 0);
 	SP_ASSERT(img != nullptr);
