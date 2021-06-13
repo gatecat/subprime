@@ -16,11 +16,24 @@
 #include <unordered_map>
 #include <memory>
 #include <vector>
+#include <exception>
 
 namespace {
 
 static const __GLXapiExports *api_exports = nullptr;
 static bool trace_en;
+
+static __EGLapiExports egl_exports;
+static __EGLapiImports egl_imports;
+
+
+// EGL functions, dynamically loaded
+static EGLBoolean (*fn_eglInitialize)(EGLDisplay display, EGLint *major, EGLint *minor);
+static EGLDisplay (*fn_eglGetDisplay)(NativeDisplayType native_display);
+static EGLBoolean (*fn_eglChooseConfig)(EGLDisplay display, EGLint const *attrib_list, EGLConfig *configs, EGLint config_size, EGLint *num_config);
+static EGLBoolean (*fn_eglGetConfigAttrib)(EGLDisplay display, EGLConfig config, EGLint attribute, EGLint *value);
+static EGLContext (*fn_eglCreateContext)(EGLDisplay display, EGLConfig config, EGLContext share_context, EGLint const *attrib_list);
+static EGLint (*fn_eglGetError)(void);
 
 #define SP_TRACE(...) do { if(trace_en) { \
 		fprintf(stderr, "[subprime] %s: ", __func__); \
@@ -29,9 +42,15 @@ static bool trace_en;
 		} } while(0)
 
 #define SP_CHECK(func) do { EGLBoolean result = func; \
-		if (result != EGL_TRUE) \
-			fprintf(stderr, "[subprime] `%s` returned %d, err=%d\n", #func, result, eglGetError()); \
-		} while (0)
+		if (result != EGL_TRUE) { \
+			fprintf(stderr, "[subprime] `%s` returned %d, err=%d\n", #func, result, fn_eglGetError()); \
+			std::terminate(); \
+		} } while (0)
+
+#define SP_ASSERT(x) do { if(!x) {\
+			fprintf(stderr, "[subprime] assert failed %s:%d '%s'\n", __FILE__, __LINE__, #x); \
+			std::terminate(); \
+		}} while (0)
 
 // Helper functions
 XID get_new_id(Display *dpy) {
@@ -42,22 +61,48 @@ XID get_new_id(Display *dpy) {
     return id;
 }
 
-struct GLXConfigImpl {};
-GLXContext create_context() {
-	return reinterpret_cast<GLXContext>(new GLXConfigImpl());
+static std::atomic_flag egl_initialised{};
+
+EGLDisplay disp() {
+	EGLDisplay d = egl_imports.getPlatformDisplay(EGL_PLATFORM_DEVICE_EXT, nullptr, nullptr);
+	SP_TRACE("EGLDisplay d=%d", d);
+	if (!egl_initialised.test_and_set()) {
+		SP_CHECK(fn_eglInitialize(d, nullptr, nullptr));
+	}
+	return d;
+}
+
+
+struct GLXConfigImpl {
+	GLXConfigImpl(EGLContext egl_ctx) : egl_ctx(egl_ctx) {};
+	EGLContext egl_ctx;
 };
+
 GLXConfigImpl &get_context(GLXContext ctx) {
 	return *reinterpret_cast<GLXConfigImpl *>(ctx);
 }
 
-static std::atomic_flag egl_initialised{};
-
-EGLDisplay disp() {
-	EGLDisplay d = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-	if (!egl_initialised.test_and_set()) {
-		SP_CHECK(eglInitialize(d, nullptr, nullptr));
+GLXContext create_context(GLXFBConfig cfg, GLXContext share_context) {
+	EGLDisplay dp = disp();
+	EGLConfig egl_cfg;
+	if (cfg == nullptr) {
+		// TODO: proper config choosing
+		std::array<int, 3> cfg_attrs{EGL_BUFFER_SIZE, 32, EGL_NONE};
+		int num_configs;
+		SP_CHECK(fn_eglChooseConfig(dp, cfg_attrs.data(), &egl_cfg, 1, &num_configs));
+		SP_ASSERT(num_configs > 0);
+	} else {
+		egl_cfg = *reinterpret_cast<EGLConfig*>(cfg);
 	}
-	return d;
+
+	std::array<int, 1> ctx_attrs{EGL_NONE};
+	EGLContext share = EGL_NO_CONTEXT;
+	if (share_context)
+		share = get_context(share_context).egl_ctx;
+
+	EGLContext egl_ctx = fn_eglCreateContext(dp, egl_cfg, share, ctx_attrs.data());
+
+	return reinterpret_cast<GLXContext>(new GLXConfigImpl(egl_ctx));
 }
 
 static XVisualInfo* get_visual(Display *dpy, int screen)
@@ -116,7 +161,7 @@ void glx_copy_context(Display *dpy, GLXContext src, GLXContext dst) {
 
 GLXContext glx_create_context(Display *dpy, XVisualInfo *vis, GLXContext shareList, Bool direct) {
 	SP_TRACE("%d", vis->depth);
-	return create_context();
+	return create_context(nullptr, shareList);
 }
 
 GLXPixmap glx_create_glx_pixmap(Display *dpy, XVisualInfo *vis, Pixmap pixmap) {
@@ -149,7 +194,7 @@ Bool glx_make_current(Display *dpy, GLXDrawable drawable, GLXContext ctx) {
 }
 
 void glx_swap_buffers(Display *dpy, GLXDrawable drawable) {
-	SP_TRACE("");
+	// SP_TRACE("");
 }
 
 void glx_use_x_font(Font font, int first, int count, int listBase) {
@@ -194,7 +239,7 @@ GLXFBConfig *glx_choose_fb_config(Display *dpy, int screen, const int *attrib_li
 	auto conv_attrs = convert_attribute_list(attrib_list);
 	std::array<EGLConfig, 256> configs_out;
 	int config_count = 0;
-	SP_CHECK(eglChooseConfig(disp(), conv_attrs.data(), configs_out.data(), 256, &config_count));
+	SP_CHECK(fn_eglChooseConfig(disp(), conv_attrs.data(), configs_out.data(), 256, &config_count));
 
 	GLXFBConfig *result = reinterpret_cast<GLXFBConfig*>(malloc(sizeof(GLXFBConfig) * config_count));
 	SP_TRACE("count=%d", config_count);
@@ -210,7 +255,7 @@ GLXFBConfig *glx_choose_fb_config(Display *dpy, int screen, const int *attrib_li
 
 GLXContext glx_create_new_context(Display *dpy, GLXFBConfig config, int render_type, GLXContext share_list, Bool direct) {
 	SP_TRACE("");
-	return create_context();
+	return create_context(config, share_list);
 }
 
 GLXPbuffer glx_create_pbuffer(Display *dpy, GLXFBConfig config, const int * attrib_list) {
@@ -245,7 +290,7 @@ int glx_get_fb_config_attrib(Display *dpy, GLXFBConfig config, int attribute, in
 	const EGLConfig &egl_cfg = *reinterpret_cast<EGLConfig*>(config);
 	auto fnd_attr = egl_attr_map.find(attribute);
 	if (fnd_attr != egl_attr_map.end()) {
-		eglGetConfigAttrib(disp(), egl_cfg, fnd_attr->second, value);
+		fn_eglGetConfigAttrib(disp(), egl_cfg, fnd_attr->second, value);
 		SP_TRACE(" val=%d", *value);
 	} else if (attribute == GLX_VISUAL_ID) {
 		*value = XVisualIDFromVisual(get_visual(dpy, 0)->visual);
@@ -306,7 +351,7 @@ static const std::unordered_map<std::string, void*> glx_procs = {
 	{"glXGetClientString", reinterpret_cast<void*>(glx_get_client_string)},
 	{"glXQueryExtensionsString", reinterpret_cast<void*>(glx_query_extensions_string)},
 	{"glXChooseFBConfig", reinterpret_cast<void*>(glx_choose_fb_config)},
-	{"glXCreateNewContext", reinterpret_cast<void*>(glx_create_context)},
+	{"glXCreateNewContext", reinterpret_cast<void*>(glx_create_new_context)},
 	{"glXCreatePbuffer", reinterpret_cast<void*>(glx_create_pbuffer)},
 	{"glXCreatePixmap", reinterpret_cast<void*>(glx_create_pixmap)},
 	{"glXCreateWindow", reinterpret_cast<void*>(glx_create_window)},
@@ -327,9 +372,6 @@ static const std::unordered_map<std::string, void*> glx_procs = {
 Bool is_screen_supported(Display *dpy, int screen) {
 	return True;
 };
-
-static __EGLapiExports egl_exports;
-static __EGLapiImports egl_imports;
 
 void *get_proc_address(const GLubyte *procName) {
 	std::string name_str(reinterpret_cast<const char*>(procName));
@@ -364,6 +406,8 @@ typedef EGLBoolean (*egl_main_t)(
 	__EGLapiImports *imports
 );
 
+#define LOAD_FN(x) do { fn_##x = reinterpret_cast<decltype(fn_##x)>(egl_imports.getProcAddress(#x)); } while (0)
+
 // The GLX vendor API entry point
 extern "C" Bool __glx_Main(
 	uint32_t version,
@@ -393,6 +437,13 @@ extern "C" Bool __glx_Main(
 		auto egl_main = reinterpret_cast<egl_main_t>(dlsym(egl_lib, "__egl_Main"));
 		EGLBoolean egl_result = egl_main(0x0001, &egl_exports, nullptr, &egl_imports);
 		SP_TRACE("egl_result=%d", egl_result);
+
+		LOAD_FN(eglInitialize);
+		LOAD_FN(eglGetDisplay);
+		LOAD_FN(eglChooseConfig);
+		LOAD_FN(eglGetConfigAttrib);
+		LOAD_FN(eglCreateContext);
+		LOAD_FN(eglGetError);
 
 		return True;
 	}
