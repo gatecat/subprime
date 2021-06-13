@@ -35,6 +35,9 @@ static EGLBoolean (*fn_eglGetConfigAttrib)(EGLDisplay display, EGLConfig config,
 static EGLContext (*fn_eglCreateContext)(EGLDisplay display, EGLConfig config, EGLContext share_context, EGLint const *attrib_list);
 static EGLSurface (*fn_eglCreatePbufferSurface)(EGLDisplay display, EGLConfig config, EGLint const *attrib_list);
 static EGLBoolean (*fn_eglMakeCurrent)(EGLDisplay display, EGLSurface draw, EGLSurface read, EGLContext context);
+static EGLBoolean (*fn_eglSwapBuffers)(EGLDisplay display, EGLSurface surface);
+static EGLBoolean (*fn_eglBindAPI)(EGLenum api);
+
 static EGLint (*fn_eglGetError)(void);
 
 static void (*fn_glReadPixels)(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void* data);
@@ -90,6 +93,8 @@ GLXConfigImpl &get_context(GLXContext ctx) {
 void get_config(EGLDisplay dp, EGLConfig *egl_cfg) {
 	// TODO: proper config choosing
 	int cfg_attrs[] = {EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+		EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+		EGL_COLOR_BUFFER_TYPE, EGL_RGB_BUFFER,
 		EGL_RED_SIZE, 8,
 		EGL_GREEN_SIZE, 8,
 		EGL_BLUE_SIZE, 8,
@@ -101,6 +106,8 @@ void get_config(EGLDisplay dp, EGLConfig *egl_cfg) {
 
 GLXContext create_context(GLXFBConfig cfg, GLXContext share_context) {
 	EGLDisplay dp = disp();
+	SP_CHECK(fn_eglBindAPI(EGL_OPENGL_API));
+
 	EGLConfig egl_cfg;
 	if (cfg == nullptr) {
 		get_config(dp, &egl_cfg);
@@ -230,6 +237,7 @@ Bool glx_is_direct(Display *dpy, GLXContext ctx) {
 }
 
 Bool glx_make_current(Display *dpy, GLXDrawable drawable, GLXContext ctx) {
+	SP_TRACE("");
 	EGLDisplay dp = disp();
 	EGLSurface surface = lookup_drawable(dpy, drawable);
 	SP_CHECK(fn_eglMakeCurrent(dp, surface, surface, get_context(ctx).egl_ctx));
@@ -243,11 +251,11 @@ void glx_swap_buffers(Display *dpy, GLXDrawable drawable) {
 	auto &sfc = drawable2surface.at(drawable);
 	size_t buf_size = 4 * sfc.width * sfc.height;
 	uint8_t *pixel_buf = reinterpret_cast<uint8_t*>(malloc(buf_size));
-	fn_glReadBuffer(GL_BACK);
-	fn_glReadPixels(0, 0, sfc.width, sfc.height, GL_RGB, GL_UNSIGNED_BYTE, pixel_buf);
+	fn_glReadBuffer(GL_FRONT);
 	fn_glFinish();
-	XImage *img = XCreateImage(dpy, get_visual(dpy, 0)->visual, 24, XYPixmap, 0,
-		reinterpret_cast<char*>(pixel_buf), sfc.width, sfc.height, 8, 0);
+	fn_glReadPixels(0, 0, sfc.width, sfc.height, GL_RGBA, GL_UNSIGNED_BYTE, pixel_buf);
+	XImage *img = XCreateImage(dpy, get_visual(dpy, 0)->visual, 24, ZPixmap, 0,
+		reinterpret_cast<char*>(pixel_buf), sfc.width, sfc.height, 32, 0);
 	SP_ASSERT(img != nullptr);
 	GC gc = XCreateGC(dpy, drawable, 0, NULL);
 	XPutImage(dpy, drawable, gc, img, 0, 0, 0, 0, sfc.width, sfc.height);
@@ -504,6 +512,8 @@ extern "C" Bool __glx_Main(
 		LOAD_FN(eglGetError);
 		LOAD_FN(eglCreatePbufferSurface);
 		LOAD_FN(eglMakeCurrent);
+		LOAD_FN(eglSwapBuffers);
+		LOAD_FN(eglBindAPI);
 		LOAD_FN(glReadBuffer);
 		LOAD_FN(glReadPixels);
 		LOAD_FN(glFinish);
